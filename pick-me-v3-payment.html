@@ -1,0 +1,1401 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>pick me · 댓글 이벤트 추첨기</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Gowun+Batang:wght@400;700&family=Noto+Sans+KR:wght@300;400;500;700&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/canvas-confetti/1.9.3/confetti.browser.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/5.1.0/tesseract.min.js"></script>
+<script src="https://js.tosspayments.com/v2/standard"></script>
+<script>
+/* ============================================================
+   ★ 설정값 — 배포 전 여기만 교체하면 됩니다 ★
+   ============================================================ */
+const CONFIG = {
+  // 토스페이먼츠 클라이언트 키 (대시보드 → 개발 → API 키)
+  TOSS_CLIENT_KEY: "test_ck_YOUR_CLIENT_KEY_HERE",
+
+  // Supabase Edge Function URL
+  // 형식: https://<project-ref>.supabase.co/functions/v1/pickme
+  EDGE_URL: "https://YOUR_PROJECT.supabase.co/functions/v1/pickme",
+
+  // 결제 성공/실패 리다이렉트 URL (현재 페이지 URL 그대로 써도 됨)
+  SUCCESS_URL: location.origin + location.pathname + "?payment=success",
+  FAIL_URL:    location.origin + location.pathname + "?payment=fail",
+
+  PRICES: { once: 1900, month: 9900, year: 79000 },
+  LABELS: { once: "1회 이용권", month: "한 달 이용권", year: "연 이용권" },
+};
+</script>
+<style>
+  /* ============================================================
+     THEME TOKENS — 멀티 테마 구조 (JS THEMES 객체와 짝)
+     ============================================================ */
+  :root{
+    --bg:#FAF6F0;
+    --dot:rgba(213,178,170,.38);
+    --paper:#FFFEFC;
+    --ink:#57514B;
+    --ink-soft:#8C847C;
+    --line:#DCD2C8;
+    --rose:#D9A0AB;
+    --rose-soft:#F4E1E3;
+    --sage:#E3EADD;
+    --lavender:#E8E2F0;
+    --cream:#F4EAD8;
+    --radius:18px;
+    --line-w:1.5px;
+    --shadow:0 6px 22px rgba(120,100,90,.10);
+    --font-display:'Gowun Batang','Noto Sans KR',serif;
+    --font-body:'Noto Sans KR',-apple-system,sans-serif;
+  }
+
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  body{
+    font-family:var(--font-body);
+    font-weight:400;
+    color:var(--ink);
+    background-color:var(--bg);
+    background-image:radial-gradient(circle, var(--dot) 2.2px, transparent 3px);
+    background-size:46px 46px;
+    min-height:100vh;
+    padding:34px 16px 90px;
+  }
+
+  .wrap{max-width:680px;margin:0 auto}
+
+  /* ---------- header ---------- */
+  header{text-align:center;margin-bottom:10px}
+  .logo{
+    font-family:var(--font-display);
+    font-size:clamp(38px,7vw,50px);
+    font-weight:700;
+    letter-spacing:.04em;
+    color:var(--ink);
+  }
+  .logo .star{color:var(--rose);font-weight:400}
+  .tagline{
+    margin-top:8px;
+    font-size:13.5px;font-weight:300;letter-spacing:.06em;
+    color:var(--ink-soft);
+  }
+  .trial-chip{
+    display:inline-block;margin-top:16px;
+    font-size:12px;font-weight:500;letter-spacing:.04em;
+    color:var(--ink);
+    border:var(--line-w) solid var(--line);
+    border-radius:999px;padding:6px 16px;
+    background:var(--paper);
+  }
+  .trial-chip b{color:var(--rose);font-weight:700}
+
+  /* ---------- theme picker ---------- */
+  .themes{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin:22px 0 34px}
+  .theme-chip{
+    font-family:var(--font-body);font-weight:500;font-size:12.5px;letter-spacing:.03em;
+    background:var(--paper);border:var(--line-w) solid var(--line);border-radius:999px;
+    padding:7px 15px;cursor:pointer;color:var(--ink);
+    transition:border-color .15s, background .15s;
+  }
+  .theme-chip:hover{border-color:var(--rose)}
+  .theme-chip.active{background:var(--rose-soft);border-color:var(--rose)}
+  .theme-chip.soon{opacity:.45;cursor:not-allowed}
+  .theme-chip.soon:hover{border-color:var(--line)}
+  .theme-chip .soon-tag{font-size:9.5px;font-weight:700;margin-left:5px;color:var(--rose)}
+
+  /* ---------- step cards ---------- */
+  .step{
+    background:var(--paper);
+    border:var(--line-w) solid var(--line);
+    border-radius:var(--radius);
+    box-shadow:var(--shadow);
+    padding:30px 26px 26px;margin-bottom:30px;
+    position:relative;
+  }
+  .step-badge{
+    position:absolute;top:-13px;left:24px;
+    font-family:var(--font-display);font-size:12px;font-weight:700;letter-spacing:.16em;
+    background:var(--paper);color:var(--rose);
+    border:var(--line-w) solid var(--rose);
+    border-radius:999px;
+    padding:5px 14px;
+  }
+  .step h2{
+    font-family:var(--font-display);
+    font-size:20px;font-weight:700;margin:2px 0 6px;letter-spacing:.02em;
+  }
+  .step .hint{font-size:13px;font-weight:300;color:var(--ink-soft);margin-bottom:16px;line-height:1.65}
+
+  .divider-dots{
+    text-align:center;color:var(--rose);letter-spacing:.5em;
+    font-size:10px;margin:18px 0 14px;user-select:none;
+  }
+
+  textarea{
+    width:100%;min-height:160px;resize:vertical;
+    font-family:var(--font-body);font-weight:400;font-size:14px;line-height:1.7;
+    border:var(--line-w) solid var(--line);border-radius:14px;padding:14px 16px;
+    background:#fff;color:var(--ink);
+  }
+  textarea::placeholder,input::placeholder{color:#C4BBB2;font-weight:300}
+  textarea:focus,input:focus{outline:none;border-color:var(--rose)}
+
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:14px}
+
+  .btn{
+    font-family:var(--font-body);font-weight:500;font-size:14px;letter-spacing:.02em;
+    border:var(--line-w) solid var(--ink);border-radius:999px;
+    padding:11px 22px;cursor:pointer;
+    background:var(--paper);color:var(--ink);
+    transition:background .15s, transform .12s;
+  }
+  .btn:hover{transform:translateY(-1px);background:var(--rose-soft)}
+  .btn.primary{background:var(--rose-soft);border-color:var(--rose);color:var(--ink)}
+  .btn.primary:hover{background:var(--rose);color:#fff}
+  .btn.ghost{border-style:dashed;border-color:var(--line);color:var(--ink-soft);font-weight:400}
+  .btn.big{
+    font-family:var(--font-display);font-weight:700;font-size:19px;letter-spacing:.06em;
+    padding:16px 46px;
+    background:var(--rose-soft);border:var(--line-w) solid var(--rose);
+  }
+  .btn.big:hover{background:var(--rose);color:#fff}
+  .btn:disabled{opacity:.4;cursor:not-allowed;transform:none}
+
+  .file-note{font-size:11.5px;font-weight:300;color:var(--ink-soft);margin-top:8px;line-height:1.55}
+  #ocrStatus{display:none;font-size:12.5px;color:var(--rose);font-weight:500;margin-top:10px}
+
+  /* ---------- options ---------- */
+  .opts{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  @media (max-width:560px){.opts{grid-template-columns:1fr}}
+  .opt{
+    border:var(--line-w) dashed var(--line);border-radius:14px;padding:14px 16px;
+  }
+  .opt label{font-weight:500;font-size:13.5px;display:flex;align-items:center;gap:8px;letter-spacing:.02em}
+  .opt .sub{font-size:11.5px;font-weight:300;color:var(--ink-soft);margin-top:4px;line-height:1.5}
+  .opt input[type=text],.opt input[type=number]{
+    width:100%;margin-top:8px;
+    border:var(--line-w) solid var(--line);border-radius:10px;
+    padding:8px 12px;font-size:13.5px;font-family:var(--font-body);color:var(--ink);
+  }
+  .opt input[type=checkbox]{width:17px;height:17px;accent-color:var(--rose)}
+
+  /* ---------- prize titles ---------- */
+  .prize-row{
+    display:flex;gap:8px;align-items:center;margin-bottom:10px;
+  }
+  .prize-row input[type=text]{
+    flex:1;border:var(--line-w) solid var(--line);border-radius:10px;
+    padding:9px 13px;font-size:13.5px;font-family:var(--font-body);color:var(--ink);
+  }
+  .prize-row input[type=number]{
+    width:74px;border:var(--line-w) solid var(--line);border-radius:10px;
+    padding:9px 10px;font-size:13.5px;text-align:center;color:var(--ink);
+    font-family:var(--font-body);
+  }
+  .prize-row .del{
+    border:none;background:none;color:var(--ink-soft);cursor:pointer;
+    font-size:16px;padding:4px 6px;line-height:1;
+  }
+  .prize-row .del:hover{color:var(--rose)}
+  .prize-label{font-size:11px;font-weight:500;color:var(--ink-soft);letter-spacing:.05em;margin-bottom:6px;display:flex;justify-content:space-between}
+  #addPrize{margin-top:2px}
+
+  /* ---------- stats + participant list ---------- */
+  .stats{display:flex;gap:8px;flex-wrap:wrap;margin-top:18px}
+  .stat{
+    font-size:12px;font-weight:400;
+    border:var(--line-w) solid var(--line);border-radius:999px;
+    padding:5px 14px;color:var(--ink-soft);background:#fff;
+  }
+  .stat b{font-weight:700;color:var(--ink)}
+  .stat.pass{border-color:var(--rose);color:var(--ink)}
+  .stat.pass b{color:var(--rose)}
+  .plist{
+    display:flex;flex-wrap:wrap;gap:7px;
+    max-height:170px;overflow-y:auto;
+    margin-top:14px;padding:2px;
+  }
+  .pchip{
+    font-size:12px;font-weight:400;
+    background:#fff;border:var(--line-w) solid var(--line);border-radius:999px;
+    padding:4px 12px;color:var(--ink);
+  }
+  .pchip.out{opacity:.35;text-decoration:line-through}
+
+  .draw-zone{text-align:center;padding:6px 0 2px}
+  .err{
+    display:none;margin-top:14px;font-size:12.5px;font-weight:400;
+    background:var(--rose-soft);border:var(--line-w) solid var(--rose);border-radius:12px;
+    padding:10px 16px;color:var(--ink);
+  }
+
+  /* ---------- draw overlay ---------- */
+  .overlay{
+    position:fixed;inset:0;z-index:50;display:none;
+    background-color:var(--bg);
+    background-image:radial-gradient(circle, var(--dot) 2.2px, transparent 3px);
+    background-size:46px 46px;
+    align-items:center;justify-content:center;flex-direction:column;gap:26px;
+    padding:22px;overflow-y:auto;
+  }
+  .overlay.show{display:flex}
+  .spin-card{
+    background:var(--paper);border:var(--line-w) solid var(--line);border-radius:20px;
+    box-shadow:var(--shadow);
+    min-width:min(82vw,400px);text-align:center;
+    padding:46px 30px;
+    font-family:var(--font-display);font-weight:700;
+    font-size:clamp(24px,5.5vw,36px);color:var(--ink);
+  }
+  .winner-groups{display:flex;flex-direction:column;gap:20px;align-items:center;max-width:640px}
+  .wgroup{text-align:center}
+  .wgroup .wtitle{
+    font-family:var(--font-display);font-size:15px;font-weight:700;
+    color:var(--rose);letter-spacing:.08em;margin-bottom:10px;
+  }
+  .wgroup .wtitle::before,.wgroup .wtitle::after{content:'—';color:var(--line);margin:0 10px;font-weight:400}
+  .wchips{display:flex;flex-wrap:wrap;gap:10px;justify-content:center}
+  .wchip{
+    font-family:var(--font-display);font-size:clamp(15px,3.6vw,20px);font-weight:700;
+    background:var(--paper);border:var(--line-w) solid var(--rose);border-radius:999px;
+    box-shadow:var(--shadow);
+    padding:11px 22px;color:var(--ink);
+    animation:pop .5s cubic-bezier(.2,1.4,.4,1) both;
+  }
+  @keyframes pop{from{scale:.4;opacity:0}to{scale:1;opacity:1}}
+  @media (prefers-reduced-motion:reduce){
+    .wchip{animation:none}
+    .btn,.theme-chip{transition:none}
+  }
+
+  /* ---------- results ---------- */
+  #resultStep{display:none}
+  .card-preview{
+    width:100%;max-width:390px;margin:16px auto 0;display:block;
+    border:var(--line-w) solid var(--line);border-radius:14px;
+    box-shadow:var(--shadow);
+  }
+  .center{text-align:center}
+  #vidStatus{display:none;font-size:12.5px;color:var(--rose);font-weight:500;margin-top:10px}
+
+  /* ---------- paywall modal ---------- */
+  .modal-bg{
+    position:fixed;inset:0;z-index:60;display:none;
+    background:rgba(87,81,75,.35);
+    align-items:center;justify-content:center;padding:20px;
+  }
+  .modal-bg.show{display:flex}
+  .modal{
+    background:var(--paper);border:var(--line-w) solid var(--line);
+    border-radius:22px;box-shadow:0 18px 50px rgba(90,70,60,.22);
+    max-width:400px;width:100%;padding:36px 30px 30px;text-align:center;
+  }
+  .modal h3{
+    font-family:var(--font-display);font-size:21px;font-weight:700;margin-bottom:8px;
+  }
+  .modal p{font-size:13px;font-weight:300;color:var(--ink-soft);line-height:1.7;margin-bottom:20px}
+  .plan{
+    border:var(--line-w) solid var(--line);border-radius:14px;
+    padding:16px;margin-bottom:12px;cursor:pointer;text-align:left;
+    display:flex;justify-content:space-between;align-items:center;
+    transition:border-color .15s, background .15s;
+  }
+  .plan:hover{border-color:var(--rose);background:var(--rose-soft)}
+  .plan .pname{font-size:14px;font-weight:500}
+  .plan .pdesc{font-size:11.5px;font-weight:300;color:var(--ink-soft);margin-top:3px}
+  .plan .pprice{font-family:var(--font-display);font-weight:700;font-size:17px;color:var(--rose);white-space:nowrap}
+  .modal .close-x{
+    margin-top:6px;border:none;background:none;color:var(--ink-soft);
+    font-size:12.5px;cursor:pointer;text-decoration:underline;font-weight:300;
+  }
+  .demo-note{
+    font-size:10.5px;color:#B9AFA6;margin-top:14px;line-height:1.6;font-weight:300;
+  }
+
+  footer{text-align:center;margin-top:40px;font-size:11.5px;font-weight:300;color:var(--ink-soft);letter-spacing:.03em;line-height:1.7}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="logo"><span class="star">✦</span> pick me <span class="star">✦</span></div>
+    <p class="tagline">댓글 이벤트를 가장 다정하게 마무리하는 추첨기</p>
+    <span class="trial-chip" id="trialChip">무료 체험 <b>2</b>회 남았어요</span>
+  </header>
+
+  <div class="themes" id="themeBar"></div>
+
+  <!-- STEP 1 -->
+  <section class="step">
+    <div class="step-badge">STEP 1</div>
+    <h2>참여자 불러오기</h2>
+    <p class="hint">댓글을 복사해 붙여넣거나, 댓글 화면을 캡처한 이미지를 올려 주세요. 「아이디 댓글내용」 한 줄 형식과 아이디·댓글이 줄로 나뉜 형식 모두 읽을 수 있어요. 시간 · 좋아요 · 답글 같은 표시는 자동으로 정리됩니다.</p>
+    <textarea id="rawInput" placeholder="예)
+lovely_daily 참여합니다 :) @friend_a @friend_b
+my_sweet_home 응모 완료했어요
+o.o_pick 참여할게요 @bestie"></textarea>
+    <div class="row">
+      <button class="btn primary" id="parseBtn">참여자 불러오기</button>
+      <button class="btn" id="imgBtn">이미지로 추가</button>
+      <button class="btn ghost" id="sampleBtn">예시 데이터</button>
+      <input type="file" id="imgInput" accept="image/*" multiple style="display:none">
+    </div>
+    <p class="file-note">이미지 인식은 화면 캡처의 화질과 환경에 따라 정확도가 달라질 수 있어요. 인식된 텍스트는 위 입력창에 추가되니 한 번 확인해 주세요.</p>
+    <p id="ocrStatus"></p>
+  </section>
+
+  <!-- STEP 2 -->
+  <section class="step">
+    <div class="step-badge">STEP 2</div>
+    <h2>당첨 구성 &amp; 조건</h2>
+    <p class="hint">당첨 타이틀은 다섯 가지까지 만들 수 있어요. 타이틀마다 당첨 인원을 정해 주세요.</p>
+
+    <div class="prize-label"><span>당첨 타이틀</span><span>인원</span></div>
+    <div id="prizeList"></div>
+    <button class="btn ghost" id="addPrize">＋ 타이틀 추가</button>
+
+    <div class="divider-dots">· · ✦ · ·</div>
+
+    <div class="opts">
+      <div class="opt">
+        <label><input type="checkbox" id="optDedupe" checked> 중복 계정은 1회만</label>
+        <p class="sub">같은 아이디가 여러 번 댓글을 남겨도 응모는 1번으로 계산해요.</p>
+      </div>
+      <div class="opt">
+        <label>필수 키워드</label>
+        <p class="sub">이 단어가 포함된 댓글만 응모로 인정해요. 비우면 전체 인정.</p>
+        <input type="text" id="optKeyword" placeholder="예) 참여">
+      </div>
+      <div class="opt">
+        <label>친구 태그 최소 개수</label>
+        <p class="sub">댓글 속 @멘션이 이 개수 이상이어야 인정해요.</p>
+        <input type="number" id="optMentions" min="0" value="0">
+      </div>
+      <div class="opt">
+        <label>이벤트 이름</label>
+        <p class="sub">결과 카드의 제목으로 들어가요.</p>
+        <input type="text" id="eventTitle" placeholder="예) 봄맞이 감사 이벤트">
+      </div>
+    </div>
+
+    <div class="stats" id="stats"></div>
+    <div class="plist" id="plist"></div>
+  </section>
+
+  <!-- STEP 3 -->
+  <section class="step">
+    <div class="step-badge">STEP 3</div>
+    <h2>추첨하기</h2>
+    <p class="hint">추첨은 이 화면 안에서 무작위로 진행되며, 어떤 데이터도 밖으로 나가지 않아요.</p>
+    <div class="draw-zone">
+      <button class="btn big" id="drawBtn">✦ 추첨 시작 ✦</button>
+      <div class="err" id="errBox"></div>
+    </div>
+  </section>
+
+  <!-- RESULT -->
+  <section class="step" id="resultStep">
+    <div class="step-badge">RESULT</div>
+    <h2>당첨자 발표</h2>
+    <p class="hint">인스타그램 규격 3:4 고화질 이미지와 추첨 순간을 담은 3초 영상으로 저장할 수 있어요.</p>
+    <div class="center">
+      <canvas id="cardCanvas" class="card-preview"></canvas>
+      <div class="row" style="justify-content:center;margin-top:20px">
+        <button class="btn primary" id="saveBtn">고화질 이미지 저장</button>
+        <button class="btn" id="vidBtn">3초 영상 저장</button>
+        <button class="btn" id="copyBtn">발표 문구 복사</button>
+        <button class="btn ghost" id="redrawBtn">다시 추첨</button>
+      </div>
+      <div class="row" id="wmRow" style="justify-content:center;margin-top:12px;display:none">
+        <label style="font-size:12.5px;color:var(--ink-soft);display:flex;align-items:center;gap:8px;font-weight:400;cursor:pointer">
+          <input type="checkbox" id="wmToggle" checked style="accent-color:var(--rose);width:16px;height:16px">
+          결과물에 pick me 마크 표시
+        </label>
+      </div>
+      <p id="vidStatus"></p>
+    </div>
+  </section>
+
+  <footer>pick me ✦ 추첨은 브라우저 안에서만 진행됩니다<br>참여자 데이터는 어디에도 저장되거나 전송되지 않아요</footer>
+</div>
+
+<!-- DRAW OVERLAY -->
+<div class="overlay" id="overlay">
+  <div class="spin-card" id="spinCard">고르는 중 ···</div>
+  <div class="winner-groups" id="winnerGroups"></div>
+  <button class="btn big" id="closeOverlay" style="display:none">결과 카드 보기 →</button>
+</div>
+
+<!-- PAYWALL -->
+<div class="modal-bg" id="paywall">
+  <div class="modal">
+    <h3>이용권으로 전부 열어 보세요</h3>
+    <p>무료 체험은 soft candy 테마로 2회까지.<br>이용권을 사용하면 모든 테마 · 마크 제거 ·<br>무제한 추첨이 함께 열려요.</p>
+    <div class="plan" data-plan="once">
+      <div><div class="pname">1회 이용권</div><div class="pdesc">추첨 1회 · 모든 테마 · 마크 제거</div></div>
+      <div class="pprice">1,900원</div>
+    </div>
+    <div class="plan" data-plan="month">
+      <div><div class="pname">한 달 이용권</div><div class="pdesc">30일 무제한 · 모든 테마 · 마크 제거</div></div>
+      <div class="pprice">9,900원</div>
+    </div>
+    <div class="row" style="margin-top:4px">
+      <input type="text" id="licenseCode" placeholder="이용코드가 있다면 입력해 주세요"
+        style="flex:1;border:var(--line-w) solid var(--line);border-radius:999px;padding:10px 16px;font-size:12.5px;font-family:var(--font-body);color:var(--ink)">
+      <button class="btn" id="licenseBtn" style="padding:10px 18px;font-size:12.5px">확인</button>
+    </div>
+    <button class="close-x" id="paywallClose">다음에 할게요</button>
+    <p class="demo-note">* 지금은 데모 결제입니다. 실제 서비스에서는 결제 링크로 결제하신 분께 이용코드를 보내 드리고, 위 칸에 입력하면 열리는 방식으로 시작할 수 있어요.</p>
+  </div>
+</div>
+
+<script>
+/* ============================================================
+   THEMES — 새 테마는 토큰만 추가하면 UI · 카드 · 영상에 모두 반영
+   ============================================================ */
+const THEMES = {
+  softcandy: {
+    label:'soft candy', soon:false, paid:false,
+    vars:{
+      '--bg':'#FAF6F0','--dot':'rgba(213,178,170,.38)','--paper':'#FFFEFC',
+      '--ink':'#57514B','--ink-soft':'#8C847C','--line':'#DCD2C8',
+      '--rose':'#D9A0AB','--rose-soft':'#F4E1E3','--line-w':'1.5px',
+      '--shadow':'0 6px 22px rgba(120,100,90,.10)',
+      '--font-display':"'Gowun Batang','Noto Sans KR',serif"
+    },
+    canvas:{
+      bg:'#FAF6F0', dot:'rgba(213,178,170,.35)',
+      ink:'#57514B', inkSoft:'#9A928A', line:'#D8CDC2',
+      rose:'#D9A0AB', roseSoft:'#F4E1E3',
+      displayFont:'"Gowun Batang"', bodyFont:'"Noto Sans KR"',
+      confetti:['#D9A0AB','#E3EADD','#E8E2F0','#F4EAD8','#FFFFFF']
+    }
+  },
+  pop: {
+    label:'pop', soon:false, paid:true,
+    vars:{
+      '--bg':'#D9E76B','--dot':'rgba(255,255,255,.75)','--paper':'#FFFDF6',
+      '--ink':'#1B1B1B','--ink-soft':'#555','--line':'#1B1B1B',
+      '--rose':'#F49B33','--rose-soft':'#FFDD44','--line-w':'2.5px',
+      '--shadow':'5px 5px 0 #1B1B1B',
+      '--font-display':"'Noto Sans KR',sans-serif"
+    },
+    canvas:{
+      bg:'#D9E76B', dot:'rgba(255,255,255,.75)',
+      ink:'#1B1B1B', inkSoft:'#3A3A3A', line:'#1B1B1B',
+      rose:'#F49B33', roseSoft:'#FFDD44',
+      displayFont:'"Noto Sans KR"', bodyFont:'"Noto Sans KR"',
+      confetti:['#FFDD44','#F7A8C4','#2AA79B','#F49B33','#FFFDF6']
+    }
+  },
+  vintage:{label:'vintage letter', soon:true},
+  craft:{label:'craft', soon:true},
+  mono:{label:'mono', soon:true},
+  pet:{label:'pet', soon:true}
+};
+let currentTheme = 'softcandy';
+
+function applyTheme(id){
+  const t = THEMES[id];
+  if(!t || t.soon) return;
+  if(t.paid && !unlocked){ $('paywall').classList.add('show'); return; }
+  currentTheme = id;
+  for(const [k,v] of Object.entries(t.vars)) document.documentElement.style.setProperty(k,v);
+  renderThemeBar();
+  if(lastDraw) drawCard();
+}
+
+const themeBar = document.getElementById('themeBar');
+function renderThemeBar(){
+  themeBar.innerHTML='';
+  for(const [id,t] of Object.entries(THEMES)){
+    const locked = t.paid && !unlocked;
+    const b = document.createElement('button');
+    b.className = 'theme-chip' + (t.soon?' soon':'') + (id===currentTheme?' active':'');
+    b.dataset.id = id;
+    b.innerHTML = t.label
+      + (t.soon?'<span class="soon-tag">SOON</span>':'')
+      + (locked?'<span class="soon-tag">🔒</span>':'');
+    if(!t.soon) b.onclick = ()=>applyTheme(id);
+    themeBar.appendChild(b);
+  }
+}
+
+const $ = id => document.getElementById(id);
+
+/* ============================================================
+   UID — 브라우저 fingerprint (로그인 없이 사용자 식별)
+   실서비스에서는 로그인 연동 권장. 여기서는 localStorage 기반.
+   ============================================================ */
+function getUID(){
+  let uid = localStorage.getItem('pickme_uid');
+  if(!uid){
+    uid = 'u_' + Date.now().toString(36) + Math.random().toString(36).slice(2,8);
+    localStorage.setItem('pickme_uid', uid);
+  }
+  return uid;
+}
+const UID = getUID();
+
+/* ============================================================
+   LICENSE STATE — Supabase 조회 결과를 메모리에 캐시
+   ============================================================ */
+const FREE_DRAWS = 2;
+let usedDraws = parseInt(localStorage.getItem('pickme_used')||'0', 10);
+let licenseState = null;   // null | { plan, expiresAt, drawsLeft, watermark }
+let unlocked = false;
+
+async function checkLicense(){
+  try{
+    const res = await fetch(`${CONFIG.EDGE_URL}/status?uid=${UID}`);
+    const data = await res.json();
+    if(data.licensed){
+      licenseState = data;
+      unlocked = true;
+    }
+  }catch(e){
+    // 네트워크 오류 시 로컬 상태 유지
+    console.warn('license check failed', e);
+  }
+  updateTrialChip(); renderThemeBar(); syncPro();
+}
+
+function trialLeft(){ return Math.max(0, FREE_DRAWS - usedDraws); }
+function updateTrialChip(){
+  const c = $('trialChip');
+  if(unlocked){
+    const label = licenseState?.plan === 'once' ? '1회 이용권' :
+                  licenseState?.plan === 'month' ? '한 달 이용권' : '연 이용권';
+    c.innerHTML = `${label} 사용 중 <b>✦</b>`;
+    return;
+  }
+  c.innerHTML = trialLeft()>0
+    ? `무료 체험 <b>${trialLeft()}</b>회 남았어요`
+    : `무료 체험이 끝났어요 · <b>이용권</b>이 필요해요`;
+}
+function canDraw(){ return unlocked || trialLeft()>0; }
+function showWatermark(){
+  if(!unlocked) return true;
+  if(licenseState?.watermark === false) return $('wmToggle').checked;
+  return $('wmToggle').checked;
+}
+function syncPro(){ $('wmRow').style.display = unlocked ? 'flex' : 'none'; }
+
+/* ============================================================
+   TOSS PAYMENTS — 결제창 호출
+   ============================================================ */
+async function requestPayment(plan){
+  const tossPayments = TossPayments(CONFIG.TOSS_CLIENT_KEY);
+  const payment = tossPayments.payment({ customerKey: UID });
+
+  const orderId = `pickme_${plan}_${UID}_${Date.now()}`;
+  const amount  = CONFIG.PRICES[plan];
+  const label   = CONFIG.LABELS[plan];
+
+  // 결제 요청 → 성공 시 SUCCESS_URL?paymentKey=...&orderId=...&amount=... 로 리다이렉트
+  await payment.requestPayment({
+    method: "CARD",                   // 카드 기본 + 간편결제 자동 노출
+    amount: { currency: "KRW", value: amount },
+    orderId,
+    orderName: `pick me · ${label}`,
+    successUrl: CONFIG.SUCCESS_URL,
+    failUrl:    CONFIG.FAIL_URL,
+    customerEmail: "",                // 선택
+    card: { useEscrow: false, flowMode: "DEFAULT", useCardPoint: false, useAppCardOnly: false },
+  });
+}
+
+/* ============================================================
+   결제 성공 리다이렉트 처리 — 페이지 로드 시 URL 파라미터 확인
+   ============================================================ */
+async function handlePaymentRedirect(){
+  const params = new URLSearchParams(location.search);
+  if(params.get('payment') !== 'success') return;
+
+  const paymentKey = params.get('paymentKey');
+  const orderId    = params.get('orderId');
+  const amount     = params.get('amount');
+  if(!paymentKey || !orderId || !amount) return;
+
+  // URL 파라미터 정리 (뒤로가기 시 재처리 방지)
+  history.replaceState({}, '', location.pathname);
+
+  // Edge Function 에 승인 요청
+  try{
+    const res = await fetch(`${CONFIG.EDGE_URL}/confirm`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ paymentKey, orderId, amount: parseInt(amount) })
+    });
+    const data = await res.json();
+    if(data.ok){
+      licenseState = data;
+      unlocked = true;
+      updateTrialChip(); renderThemeBar(); syncPro();
+      showPaymentSuccess();
+    }else{
+      alert('결제 승인 중 오류가 발생했어요: ' + (data.message || ''));
+    }
+  }catch(e){
+    alert('네트워크 오류로 결제 확인에 실패했어요. 고객센터로 문의해 주세요.');
+  }
+}
+
+function showPaymentSuccess(){
+  const modal = document.createElement('div');
+  modal.style.cssText='position:fixed;inset:0;z-index:70;display:flex;align-items:center;justify-content:center;background:rgba(87,81,75,.4);padding:20px';
+  modal.innerHTML=`
+    <div style="background:#FFFEFC;border:1.5px solid #DCD2C8;border-radius:22px;max-width:340px;width:100%;padding:36px 28px;text-align:center;font-family:'Noto Sans KR',sans-serif">
+      <div style="font-size:32px;margin-bottom:12px">✦</div>
+      <div style="font-size:18px;font-weight:700;color:#57514B;margin-bottom:8px">이용권이 열렸어요</div>
+      <p style="font-size:13px;font-weight:300;color:#8C847C;margin-bottom:22px;line-height:1.6">모든 테마와 워터마크 제거 기능을 사용할 수 있어요.</p>
+      <button onclick="this.closest('div[style]').remove()" style="font-family:'Noto Sans KR',sans-serif;font-weight:500;font-size:14px;border:1.5px solid #D9A0AB;border-radius:999px;padding:10px 28px;background:#F4E1E3;cursor:pointer;color:#57514B">시작하기</button>
+    </div>`;
+  document.body.appendChild(modal);
+}
+
+/* ============================================================
+   PAYWALL — 플랜 버튼 → 토스 결제창
+   ============================================================ */
+$('paywallClose').onclick = ()=>$('paywall').classList.remove('show');
+
+document.querySelectorAll('.plan').forEach(p=>{
+  p.onclick = async ()=>{
+    $('paywall').classList.remove('show');
+    const plan = p.dataset.plan;
+    try{
+      await requestPayment(plan);
+    }catch(e){
+      // 사용자가 결제창을 닫은 경우 등 — 조용히 무시
+      if(e?.code !== 'USER_CANCEL') console.error('payment error', e);
+    }
+  };
+});
+
+/* 이용코드 입력 (카카오페이 수동 발급 병행용) */
+$('licenseBtn').onclick = async ()=>{
+  const code = $('licenseCode').value.trim().toUpperCase();
+  if(code.startsWith('PICKME-') && code.length >= 10){
+    // 코드 방식은 Edge Function 없이 직접 잠금 해제 (1단계 수동 운영용)
+    unlocked = true;
+    localStorage.setItem('pickme_code', code);
+    $('paywall').classList.remove('show');
+    updateTrialChip(); renderThemeBar(); syncPro();
+    hideErr();
+  }else{
+    $('licenseCode').value = '';
+    $('licenseCode').placeholder = '코드를 다시 확인해 주세요';
+  }
+};
+
+/* ============================================================
+   PRIZE TITLES (최대 5개)
+   ============================================================ */
+const MAX_PRIZES = 5;
+function prizeRow(name='', count=1){
+  const div = document.createElement('div');
+  div.className='prize-row';
+  div.innerHTML = `
+    <input type="text" class="pz-name" placeholder="예) 1등 · 감사 선물" value="${name}">
+    <input type="number" class="pz-count" min="1" value="${count}">
+    <button class="del" title="삭제">✕</button>`;
+  div.querySelector('.del').onclick = ()=>{
+    if(document.querySelectorAll('.prize-row').length>1){ div.remove(); syncAddBtn(); }
+  };
+  return div;
+}
+function syncAddBtn(){
+  $('addPrize').style.display =
+    document.querySelectorAll('.prize-row').length>=MAX_PRIZES ? 'none':'inline-block';
+}
+$('prizeList').appendChild(prizeRow('당첨자',1));
+$('addPrize').onclick = ()=>{
+  if(document.querySelectorAll('.prize-row').length<MAX_PRIZES){
+    $('prizeList').appendChild(prizeRow());
+    syncAddBtn();
+  }
+};
+
+function getPrizes(){
+  const rows=[...document.querySelectorAll('.prize-row')];
+  return rows.map((r,i)=>({
+    title: r.querySelector('.pz-name').value.trim() || `당첨 ${i+1}`,
+    count: Math.max(1, parseInt(r.querySelector('.pz-count').value||'1',10))
+  }));
+}
+
+/* ============================================================
+   PARSING
+   ============================================================ */
+const META_PATTERNS = [
+  /^\d+\s*(초|분|시간|일|주|개월|년)\s*전?$/,
+  /^좋아요\s*[\d,]+개?$/, /^좋아요$/, /^답글(\s*달기)?$/, /^답글\s*\d+개.*$/,
+  /^번역\s*보기$/, /^더\s*보기$/, /^숨기기$/, /^핀\s*고정됨$/, /^작성자$/, /^크리에이터$/,
+  /^\d+\s*(s|m|h|d|w)$/i, /^reply$/i, /^like[sd]?$/i, /^view\s.*$/i, /^see translation$/i,
+  /^[·•\-_=~\s]*$/
+];
+const USER_RE = /^@?[A-Za-z0-9._]{2,30}$/;
+function isMeta(line){ return META_PATTERNS.some(r=>r.test(line)); }
+
+function parseInput(text){
+  const lines = text.split(/\n+/).map(l=>l.trim()).filter(l=>l && !isMeta(l));
+  const entries = [];
+  let cur = null;
+  for(const line of lines){
+    const tokens = line.split(/\s+/);
+    const first = tokens[0].replace(/[:：]$/,'');
+    if(USER_RE.test(first)){
+      if(cur) entries.push(cur);
+      cur = { username:first.replace(/^@/,''), comment:tokens.slice(1).join(' ') };
+    }else if(cur){
+      cur.comment += (cur.comment?' ':'') + line;
+    }
+  }
+  if(cur) entries.push(cur);
+  return entries;
+}
+
+/* ============================================================
+   IMAGE (OCR)
+   ============================================================ */
+$('imgBtn').onclick = ()=>$('imgInput').click();
+$('imgInput').onchange = async (e)=>{
+  const files=[...e.target.files];
+  if(!files.length) return;
+  const st=$('ocrStatus');
+  if(typeof Tesseract==='undefined'){
+    st.style.display='block';
+    st.textContent='이 환경에서는 이미지 인식을 불러올 수 없어요. 텍스트 붙여넣기를 이용해 주세요.';
+    return;
+  }
+  st.style.display='block';
+  let ok=0;
+  for(let i=0;i<files.length;i++){
+    st.textContent=`이미지 읽는 중 ··· (${i+1}/${files.length})`;
+    try{
+      let text='';
+      try{
+        const r = await Tesseract.recognize(files[i],'kor+eng');
+        text = r.data.text;
+      }catch(_){
+        const r = await Tesseract.recognize(files[i],'eng');
+        text = r.data.text;
+      }
+      if(text.trim()){
+        const ta=$('rawInput');
+        ta.value = (ta.value.trim()? ta.value.trim()+'\n':'') + text.trim();
+        ok++;
+      }
+    }catch(err){ /* 개별 파일 실패는 건너뜀 */ }
+  }
+  st.textContent = ok
+    ? `이미지 ${ok}장을 읽었어요. 입력창에서 내용을 확인한 뒤 「참여자 불러오기」를 눌러 주세요.`
+    : '이미지를 읽지 못했어요. 화질을 확인하거나 텍스트 붙여넣기를 이용해 주세요.';
+  e.target.value='';
+};
+
+/* ============================================================
+   FILTERING + STATE
+   ============================================================ */
+let allEntries = [];
+let eligible = [];
+let lastDraw = null;   // { title, date, total, groups:[{title, users:[]}] }
+
+function refresh(){
+  const dedupe = $('optDedupe').checked;
+  const keyword = $('optKeyword').value.trim();
+  const minM = parseInt($('optMentions').value||'0',10);
+
+  const seen = new Set();
+  eligible = [];
+  const chips = [];
+
+  for(const e of allEntries){
+    let out = null;
+    const mentions = (e.comment.match(/@[A-Za-z0-9._]{2,30}/g)||[]).length;
+    if(dedupe && seen.has(e.username)) out = '중복';
+    else if(keyword && !e.comment.includes(keyword) && !e.username.includes(keyword)) out = '키워드';
+    else if(mentions < minM) out = '태그';
+    if(dedupe) seen.add(e.username);
+    if(out) chips.push({u:e.username, out:true});
+    else { eligible.push(e); chips.push({u:e.username, out:false}); }
+  }
+
+  $('stats').innerHTML =
+    `<span class="stat">전체 <b>${allEntries.length}</b></span>` +
+    `<span class="stat pass">응모 인정 <b>${eligible.length}</b></span>` +
+    `<span class="stat">제외 <b>${allEntries.length-eligible.length}</b></span>`;
+
+  $('plist').innerHTML = chips.map(c=>
+    `<span class="pchip${c.out?' out':''}">@${c.u}</span>`).join('');
+}
+
+['optDedupe','optKeyword','optMentions'].forEach(id=>{
+  $(id).addEventListener('input', refresh);
+});
+
+$('parseBtn').onclick = ()=>{
+  allEntries = parseInput($('rawInput').value);
+  refresh();
+  if(!allEntries.length){
+    showErr('참여자를 읽지 못했어요. 「아이디 댓글내용」 형식으로 한 줄씩 붙여넣어 보세요.');
+  } else hideErr();
+};
+
+$('sampleBtn').onclick = ()=>{
+  $('rawInput').value =
+`lovely_daily 참여합니다 :) 요즘 매일 들어와서 구경해요 @friend_a @friend_b
+my_sweet_home 응모 완료했어요! 거실에 두면 예쁠 것 같아요
+o.o_pick 참여할게요 @bestie
+haru_interior 참여합니다 ✿ 안방 협탁 위에 올려두고 싶어요 @roomie_j @moon_and_star
+daily_by_seon 응모해요~ 늘 잘 보고 있어요
+lovely_daily 한 번 더 응모합니다!
+blanc_moment 이벤트 참여! @cozy_note
+warm.table 오늘 것도 너무 예뻐요
+atelier_dam 참여합니다 🤍 @linen_holic
+soft_hours 응모할게요! 선물하고 싶은 친구가 있어요 @gift_for_you @petite_o`;
+  $('parseBtn').click();
+};
+
+function showErr(msg){ const e=$('errBox'); e.textContent=msg; e.style.display='block'; }
+function hideErr(){ $('errBox').style.display='none'; }
+
+/* ============================================================
+   DRAW
+   ============================================================ */
+function shuffle(a){
+  const arr=[...a];
+  for(let i=arr.length-1;i>0;i--){
+    const j = Math.floor(Math.random()*(i+1));
+    [arr[i],arr[j]]=[arr[j],arr[i]];
+  }
+  return arr;
+}
+
+$('drawBtn').onclick = ()=>{
+  if(!canDraw()){ $('paywall').classList.add('show'); return; }
+  if(!allEntries.length){ showErr('먼저 STEP 1에서 참여자를 불러와 주세요.'); return; }
+  const prizes = getPrizes();
+  const need = prizes.reduce((s,p)=>s+p.count,0);
+  if(!eligible.length){ showErr('조건을 통과한 참여자가 없어요. STEP 2 조건을 확인해 주세요.'); return; }
+  if(need > eligible.length){
+    showErr(`응모 인정 인원(${eligible.length}명)보다 전체 당첨 인원(${need}명)이 많아요.`); return;
+  }
+  hideErr();
+
+  const pool = shuffle(eligible);
+  let idx=0;
+  const groups = prizes.map(p=>({
+    title:p.title,
+    users:pool.slice(idx, idx+=p.count).map(u=>u.username)
+  }));
+
+  const now = new Date();
+  lastDraw = {
+    title: $('eventTitle').value.trim(),
+    date: `${now.getFullYear()}.${String(now.getMonth()+1).padStart(2,'0')}.${String(now.getDate()).padStart(2,'0')} ${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`,
+    total: eligible.length,
+    groups
+  };
+
+  usedDraws++;
+  localStorage.setItem('pickme_used', usedDraws);
+  updateTrialChip();
+
+  // 이용권 있는 경우 서버에 소비 기록 (1회권 차감)
+  if(unlocked){
+    fetch(`${CONFIG.EDGE_URL}/consume`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ uid: UID })
+    }).catch(()=>{/* 네트워크 오류 시 무시 — 낙관적 업데이트 */});
+  }
+  runOverlay();
+};
+
+const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+function runOverlay(){
+  const ov=$('overlay'), spin=$('spinCard'), wg=$('winnerGroups'), close=$('closeOverlay');
+  wg.innerHTML=''; close.style.display='none';
+  spin.style.display='block'; spin.textContent='고르는 중 ···';
+  ov.classList.add('show');
+
+  const T = THEMES[currentTheme].canvas;
+  const revealAll = ()=>{
+    spin.style.display='none';
+    let delay=0;
+    lastDraw.groups.forEach(g=>{
+      const gdiv=document.createElement('div');
+      gdiv.className='wgroup';
+      gdiv.innerHTML=`<div class="wtitle">${g.title}</div><div class="wchips"></div>`;
+      wg.appendChild(gdiv);
+      const chips=gdiv.querySelector('.wchips');
+      g.users.forEach(u=>{
+        setTimeout(()=>{
+          const c=document.createElement('div');
+          c.className='wchip'; c.textContent='@'+u;
+          chips.appendChild(c);
+          if(window.confetti && !reduceMotion){
+            confetti({particleCount:45, spread:70, startVelocity:26,
+              origin:{y:.5}, colors:T.confetti, scalar:.9});
+          }
+        }, reduceMotion?0:delay);
+        delay+=480;
+      });
+    });
+    setTimeout(()=>{ close.style.display='inline-block'; }, reduceMotion?0:delay+300);
+  };
+
+  if(reduceMotion){ revealAll(); return; }
+
+  let t=0;
+  const iv=setInterval(()=>{
+    const r=eligible[Math.floor(Math.random()*eligible.length)];
+    spin.textContent='@'+r.username;
+    t+=70;
+    if(t>=1750){ clearInterval(iv); revealAll(); }
+  },70);
+}
+
+$('closeOverlay').onclick = ()=>{
+  $('overlay').classList.remove('show');
+  $('resultStep').style.display='block';
+  drawCard();
+  $('resultStep').scrollIntoView({behavior:reduceMotion?'auto':'smooth'});
+};
+
+/* ============================================================
+   RESULT CARD — 3:4 고화질 (2160 × 2880)
+   ============================================================ */
+function rr(ctx,x,y,w,h,r){
+  ctx.beginPath();
+  ctx.moveTo(x+r,y);
+  ctx.arcTo(x+w,y,x+w,y+h,r);
+  ctx.arcTo(x+w,y+h,x,y+h,r);
+  ctx.arcTo(x,y+h,x,y,r);
+  ctx.arcTo(x,y,x+w,y,r);
+  ctx.closePath();
+}
+
+function paintBase(ctx,W,H,T,s){
+  ctx.fillStyle=T.bg; ctx.fillRect(0,0,W,H);
+  ctx.fillStyle=T.dot;
+  const gap=92*s;
+  for(let y=0;y<H+gap;y+=gap){
+    for(let x=0;x<W+gap;x+=gap){
+      const off=(Math.floor(y/gap)%2)?gap/2:0;
+      ctx.beginPath(); ctx.arc(x+off,y,4.4*s,0,Math.PI*2); ctx.fill();
+    }
+  }
+}
+
+function dotDivider(ctx,cx,y,T,s){
+  ctx.fillStyle=T.rose;
+  const r=4*s, gap=26*s;
+  [-2,-1,1,2].forEach(i=>{ ctx.beginPath(); ctx.arc(cx+i*gap,y,r*0.6,0,Math.PI*2); ctx.fill(); });
+  ctx.font=`${18*s}px ${T.displayFont}`;
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText('✦',cx,y+1*s);
+}
+
+async function drawCard(){
+  await document.fonts.ready;
+  const T = THEMES[currentTheme].canvas;
+  const cv = $('cardCanvas');
+  const W=2160, H=2880, s=W/1080;
+  cv.width=W; cv.height=H;
+  const ctx=cv.getContext('2d');
+  renderCardComposition(ctx, W, H, T, s);
+}
+
+function renderCardComposition(ctx, W, H, T, s){
+  paintBase(ctx, W, H, T, s);
+  const cx = W/2;
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+
+  /* 은은하게 흩어진 별 장식 */
+  const sparks=[[.23,.155,15],[.79,.125,11],[.145,.30,9],[.855,.315,13],[.25,.85,10],[.755,.835,12]];
+  ctx.save();
+  ctx.globalAlpha=.45;
+  ctx.fillStyle=T.rose;
+  for(const [px,py,ss] of sparks){
+    ctx.font=`${ss*s}px ${T.displayFont}`;
+    ctx.fillText('✦', W*px, H*py);
+  }
+  ctx.restore();
+
+  /* eyebrow */
+  let y=340*s;
+  ctx.fillStyle=T.rose;
+  ctx.font=`400 ${24*s}px ${T.bodyFont}`;
+  ctx.fillText('C O N G R A T U L A T I O N S', cx, y);
+
+  const maxW=W-440*s;
+
+  /* title (있는 경우에만) */
+  if(lastDraw.title){
+    y+=88*s;
+    let fs=76;
+    let lines=[lastDraw.title];
+    ctx.font=`700 ${fs*s}px ${T.displayFont}`;
+    if(ctx.measureText(lastDraw.title).width>maxW && lastDraw.title.includes(' ')){
+      const ws=lastDraw.title.split(' ');
+      let best=[lastDraw.title], gap=Infinity;
+      for(let i=1;i<ws.length;i++){
+        const a=ws.slice(0,i).join(' '), b=ws.slice(i).join(' ');
+        const d=Math.abs(a.length-b.length);
+        if(d<gap){gap=d;best=[a,b];}
+      }
+      lines=best;
+    }
+    const fit=()=>{ ctx.font=`700 ${fs*s}px ${T.displayFont}`; return lines.every(l=>ctx.measureText(l).width<=maxW); };
+    while(!fit() && fs>36) fs-=3;
+    ctx.fillStyle=T.ink;
+    lines.forEach((l,i)=>{ ctx.fillText(l,cx,y+i*(fs+18)*s); });
+    y+=lines.length*(fs+18)*s + 40*s;
+  }else{
+    y+=76*s;
+  }
+
+  dotDivider(ctx,cx,y,T,s);
+  y+=90*s;
+
+  /* winners */
+  const bottomLimit=H-260*s;
+  const totalUsers=lastDraw.groups.reduce((n,g)=>n+g.users.length,0);
+  let nameFs = totalUsers<=3?58: totalUsers<=6?48: totalUsers<=10?40: totalUsers<=16?33:27;
+  let titleFs = 30;
+  const sep=' · ';
+  const hideTitle = lastDraw.groups.length===1 && lastDraw.groups[0].title==='당첨자';
+
+  const layout=(nf,tf)=>{
+    const groups=[]; let h=0;
+    for(const g of lastDraw.groups){
+      ctx.font=`700 ${nf*s}px ${T.displayFont}`;
+      const nlines=[]; let line='';
+      for(const u of g.users){
+        const cand = line ? line+sep+'@'+u : '@'+u;
+        if(ctx.measureText(cand).width>maxW && line){ nlines.push(line); line='@'+u; }
+        else line=cand;
+      }
+      if(line) nlines.push(line);
+      const lineH=nf*1.75*s;
+      const th = hideTitle ? 0 : tf*s+42*s;
+      const gh = th + nlines.length*lineH;
+      groups.push({g,nlines,lineH,gh});
+      h+=gh+60*s;
+    }
+    return {groups,h:h-60*s};
+  };
+
+  let L=layout(nameFs,titleFs);
+  while(y+L.h>bottomLimit && nameFs>20){
+    nameFs-=2; titleFs=Math.max(24,titleFs-1);
+    L=layout(nameFs,titleFs);
+  }
+  y=y+Math.max(0,(bottomLimit-y-L.h)/2)+10*s;
+
+  for(const item of L.groups){
+    const {g,nlines,lineH}=item;
+    if(!hideTitle){
+      ctx.font=`700 ${titleFs*s}px ${T.displayFont}`;
+      ctx.fillStyle=T.rose;
+      const tw=ctx.measureText(g.title).width;
+      ctx.fillText(g.title,cx,y);
+      ctx.strokeStyle=T.line; ctx.lineWidth=1.5*s;
+      const lw=64*s, pad=28*s;
+      ctx.beginPath();
+      ctx.moveTo(cx-tw/2-pad-lw, y); ctx.lineTo(cx-tw/2-pad, y);
+      ctx.moveTo(cx+tw/2+pad, y); ctx.lineTo(cx+tw/2+pad+lw, y);
+      ctx.stroke();
+      y+=titleFs*s+42*s;
+    }
+    ctx.fillStyle=T.ink;
+    ctx.font=`700 ${nameFs*s}px ${T.displayFont}`;
+    for(const ln of nlines){ ctx.fillText(ln,cx,y); y+=lineH; }
+    y+=60*s;
+  }
+
+  /* footer — 워터마크 (유료일 때 숨김 가능) */
+  if(showWatermark()){
+    ctx.fillStyle=T.rose;
+    ctx.font=`700 ${27*s}px ${T.displayFont}`;
+    ctx.fillText('✦ pick me ✦', cx, H-160*s);
+  }
+}
+
+$('saveBtn').onclick=()=>{
+  const a=document.createElement('a');
+  a.download='당첨자발표_3x4.png';
+  a.href=$('cardCanvas').toDataURL('image/png');
+  a.click();
+};
+
+/* ============================================================
+   3초 영상 — 추첨 과정 기록 (canvas capture)
+   ============================================================ */
+$('vidBtn').onclick=async ()=>{
+  const st=$('vidStatus');
+  if(!('MediaRecorder' in window)){
+    st.style.display='block';
+    st.textContent='이 브라우저는 영상 저장을 지원하지 않아요.';
+    return;
+  }
+  st.style.display='block';
+  st.textContent='영상 만드는 중 ··· (약 3초)';
+  $('vidBtn').disabled=true;
+
+  await document.fonts.ready;
+  const T=THEMES[currentTheme].canvas;
+  const W=1080,H=1440,s=1;
+  const cv=document.createElement('canvas');
+  cv.width=W;cv.height=H;
+  const ctx=cv.getContext('2d');
+
+  const mimes=['video/mp4;codecs=avc1','video/mp4','video/webm;codecs=vp9','video/webm'];
+  const mime=mimes.find(m=>MediaRecorder.isTypeSupported(m))||'';
+  const stream=cv.captureStream(30);
+  const rec=new MediaRecorder(stream, mime?{mimeType:mime,videoBitsPerSecond:7_000_000}:{});
+  const chunks=[];
+  rec.ondataavailable=e=>{ if(e.data.size) chunks.push(e.data); };
+  const done=new Promise(res=>{ rec.onstop=res; });
+
+  /* --- 결과 이미지와 동일한 카드 구성을 오프스크린으로 미리 렌더 --- */
+  const cardOff=document.createElement('canvas');
+  cardOff.width=W; cardOff.height=H;
+  renderCardComposition(cardOff.getContext('2d'), W, H, T, s);
+
+  /* --- 참가자 그리드: 명단이 한눈에 보이는 상태 --- */
+  const MAXSHOW=48;
+  const names=eligible.map(e=>'@'+e.username);
+  const winnersFlat=[...new Set(lastDraw.groups.flatMap(g=>g.users.map(u=>'@'+u)))];
+  let shown=names.slice(0,MAXSHOW);
+  for(const wnm of winnersFlat){
+    if(!shown.includes(wnm)){
+      const idx=shown.findIndex(x=>!winnersFlat.includes(x));
+      if(idx>=0) shown[idx]=wnm; else shown.push(wnm);
+    }
+  }
+  const extra=Math.max(0,names.length-shown.length);
+  const n=shown.length;
+  const gfs = n<=12?29: n<=24?23: n<=36?19:16;
+  ctx.font=`500 ${gfs}px ${T.bodyFont}`;
+  const padX=20, gapX=12, rowH=gfs+30;
+  const maxRow=W-240;
+  const rowsArr=[]; let row=[],rw=0;
+  for(const nm of shown){
+    const w=ctx.measureText(nm).width+padX*2;
+    if(rw+w+(row.length?gapX:0)>maxRow && row.length){rowsArr.push(row);row=[];rw=0;}
+    rw+=w+(row.length?gapX:0);
+    row.push({nm,w});
+  }
+  if(row.length)rowsArr.push(row);
+  const zoneTop=430, zoneBottom=H-250;
+  let gy=zoneTop+Math.max(0,(zoneBottom-zoneTop-rowsArr.length*rowH)/2)+rowH/2;
+  const items=[];
+  for(const r of rowsArr){
+    const rowW=r.reduce((sm,i)=>sm+i.w,0)+(r.length-1)*gapX;
+    let x=(W-rowW)/2;
+    for(const it of r){ items.push({nm:it.nm,w:it.w,x:x+it.w/2,y:gy}); x+=it.w+gapX; }
+    gy+=rowH;
+  }
+  const seq=Array.from({length:60},()=>Math.floor(Math.random()*Math.max(1,n)));
+
+  /* 상단 타이틀 폭 맞춤 (picking 화면용) */
+  let hfs=46;
+  const gridTitle=lastDraw.title || '오늘의 주인공은?';
+  ctx.font=`700 ${hfs}px ${T.displayFont}`;
+  while(ctx.measureText(gridTitle).width>W-220 && hfs>26){
+    hfs-=2; ctx.font=`700 ${hfs}px ${T.displayFont}`;
+  }
+
+  /* --- 폭죽 --- */
+  const parts=[];
+  const palette=[...T.confetti,'#E8C27A','#F6E3B8'];
+  function burst(bx,by,count){
+    for(let i=0;i<count;i++){
+      const a=Math.random()*Math.PI*2;
+      const sp=2.6+Math.random()*7.4;
+      parts.push({
+        x:bx, y:by,
+        vx:Math.cos(a)*sp, vy:Math.sin(a)*sp-1.2,
+        r:1.8+Math.random()*3.6,
+        c:palette[Math.floor(Math.random()*palette.length)],
+        life:1, tw:Math.random()*6.28
+      });
+    }
+  }
+  const REVEAL_START=1500, REVEAL_END=1780, DUR=3500;
+  const burstPlan=[
+    {t:REVEAL_START,     x:.50,y:.30,c:130},
+    {t:REVEAL_START+250, x:.25,y:.20,c:90},
+    {t:REVEAL_START+450, x:.75,y:.23,c:90},
+    {t:REVEAL_START+800, x:.50,y:.16,c:100}
+  ];
+  let bi=0;
+  const start=performance.now();
+
+  function drawGridPickingContent(t){
+    ctx.textAlign='center';ctx.textBaseline='middle';
+    ctx.fillStyle=T.rose;
+    ctx.font=`400 20px ${T.bodyFont}`;
+    ctx.fillText('P I C K I N G   T H E   O N E', W/2, 240);
+    ctx.fillStyle=T.ink;
+    ctx.font=`700 ${hfs}px ${T.displayFont}`;
+    ctx.fillText(gridTitle, W/2, 308);
+
+    const hl = seq[Math.floor(t/85)%seq.length];
+    items.forEach((it,i)=>{
+      if(i===hl){
+        ctx.fillStyle=T.roseSoft;
+        rr(ctx,it.x-it.w/2,it.y-rowH/2+4,it.w,rowH-8,(rowH-8)/2);ctx.fill();
+        ctx.strokeStyle=T.rose;ctx.lineWidth=1.6;
+        rr(ctx,it.x-it.w/2,it.y-rowH/2+4,it.w,rowH-8,(rowH-8)/2);ctx.stroke();
+        ctx.fillStyle=T.ink;
+        ctx.font=`700 ${gfs}px ${T.bodyFont}`;
+      }else{
+        ctx.fillStyle=T.inkSoft;
+        ctx.font=`400 ${gfs}px ${T.bodyFont}`;
+      }
+      ctx.fillText(it.nm,it.x,it.y);
+    });
+    if(extra>0){
+      ctx.fillStyle=T.inkSoft;
+      ctx.font=`300 16px ${T.bodyFont}`;
+      ctx.fillText(`외 ${extra}명`, W/2, zoneBottom+18);
+    }
+  }
+
+  function frame(now){
+    const t=now-start;
+
+    /* 배경 → 콘텐츠 */
+    if(t < REVEAL_START){
+      paintBase(ctx,W,H,T,s);
+      drawGridPickingContent(t);
+    }else if(t < REVEAL_END){
+      const k=(t-REVEAL_START)/(REVEAL_END-REVEAL_START);
+      ctx.drawImage(cardOff, 0, 0);
+      ctx.globalAlpha=1-k;
+      drawGridPickingContent(REVEAL_START);
+      ctx.globalAlpha=1;
+    }else{
+      ctx.drawImage(cardOff, 0, 0);
+    }
+
+    /* 폭죽 */
+    while(bi<burstPlan.length && t>=burstPlan[bi].t){
+      burst(W*burstPlan[bi].x, H*burstPlan[bi].y, burstPlan[bi].c); bi++;
+    }
+    const extraDecay = t>DUR-500 ? 0.06 : 0;   // 끝 프레임은 폭죽이 완전히 사라지도록
+    for(const p of parts){
+      p.x+=p.vx; p.y+=p.vy;
+      p.vy+=0.14; p.vx*=0.986; p.vy*=0.986;
+      p.life-=(0.011+extraDecay);
+      if(p.life>0){
+        const twk=.65+.35*Math.sin(t/70+p.tw);
+        ctx.globalAlpha=Math.max(0,p.life)*twk;
+        ctx.fillStyle=p.c;
+        ctx.beginPath();ctx.arc(p.x,p.y,p.r,0,Math.PI*2);ctx.fill();
+        ctx.globalAlpha=Math.max(0,p.life)*.22;
+        ctx.beginPath();ctx.arc(p.x,p.y,p.r*2.2,0,Math.PI*2);ctx.fill();
+        ctx.globalAlpha=1;
+      }
+    }
+
+    if(t<DUR) requestAnimationFrame(frame);
+    else rec.stop();
+  }
+
+  rec.start();
+  requestAnimationFrame(frame);
+  await done;
+
+  const ext = mime.includes('mp4')?'mp4':'webm';
+  const blob=new Blob(chunks,{type:mime||'video/webm'});
+  const a=document.createElement('a');
+  a.download=`pickme_결과영상.${ext}`;
+  a.href=URL.createObjectURL(blob);
+  a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href),4000);
+
+  st.textContent = ext==='mp4'
+    ? '영상이 저장되었어요.'
+    : '영상이 저장되었어요. (webm 형식 · 인스타 업로드 시 갤러리 앱에서 mp4 변환이 필요할 수 있어요)';
+  $('vidBtn').disabled=false;
+};
+
+/* ============================================================
+   COPY + REDRAW
+   ============================================================ */
+$('copyBtn').onclick=async()=>{
+  const body=lastDraw.groups.map(g=>
+    `[${g.title}]\n${g.users.map(u=>'@'+u).join('\n')}`).join('\n\n');
+  const header = lastDraw.title ? `✦ ${lastDraw.title} ✦\n\n` : '✦ 당첨자 발표 ✦\n\n';
+  const txt =
+`${header}${body}
+
+참여해 주신 모든 분들 진심으로 감사드려요.
+당첨되신 분들은 DM을 확인해 주세요 :)
+
+(${lastDraw.date} 추첨 · 총 응모 ${lastDraw.total}명)`;
+  try{
+    await navigator.clipboard.writeText(txt);
+  }catch(e){
+    const ta=document.createElement('textarea');
+    ta.value=txt; document.body.appendChild(ta); ta.select();
+    document.execCommand('copy'); ta.remove();
+  }
+  $('copyBtn').textContent='복사되었어요 ✓';
+  setTimeout(()=>$('copyBtn').textContent='발표 문구 복사',1600);
+};
+
+$('redrawBtn').onclick=()=>{
+  if(!canDraw()){ $('paywall').classList.add('show'); return; }
+  $('drawBtn').click();
+};
+
+/* 이용코드 입력 (결제 링크 판매용 · 데모 검증) */
+$('licenseBtn').onclick=()=>{
+  const code=$('licenseCode').value.trim().toUpperCase();
+  if(code.startsWith('PICKME-') && code.length>=10){
+    unlocked=true;
+    $('paywall').classList.remove('show');
+    updateTrialChip(); renderThemeBar(); syncPro();
+    hideErr();
+  }else{
+    $('licenseCode').value='';
+    $('licenseCode').placeholder='코드를 다시 확인해 주세요';
+  }
+};
+
+$('wmToggle').addEventListener('change', async ()=>{
+  if(lastDraw) drawCard();
+  if(unlocked){
+    fetch(`${CONFIG.EDGE_URL}/watermark`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ uid: UID, show: $('wmToggle').checked })
+    }).catch(()=>{});
+  }
+});
+
+// 시작 순서: 결제 리다이렉트 처리 → 이용권 조회 → UI 초기화
+(async ()=>{
+  await handlePaymentRedirect();
+  await checkLicense();
+  // 저장된 이용코드 복원 (카카오페이 수동 방식 병행)
+  if(!unlocked && localStorage.getItem('pickme_code')){
+    unlocked = true;
+    updateTrialChip(); renderThemeBar(); syncPro();
+  }
+})();
+</script>
+</body>
+</html>
