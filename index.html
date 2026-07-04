@@ -9,25 +9,34 @@
 <link href="https://fonts.googleapis.com/css2?family=Gowun+Batang:wght@400;700&family=Noto+Sans+KR:wght@300;400;500;700&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/canvas-confetti/1.9.3/confetti.browser.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/5.1.0/tesseract.min.js"></script>
-<script src="https://js.tosspayments.com/v2/standard"></script>
 <script>
 /* ============================================================
-   ★ 설정값 — 배포 전 여기만 교체하면 됩니다 ★
+   ★ 설정값 — 그로블 결제창 연동 완료 ★
+
+   [그로블 이동 페이지 설정 — 그로블 대시보드에서 아래 주소를 입력]
+   1회 이용권 결제창의 이동 페이지:
+     https://iwba2023-eng.github.io/pickme/?unlock=PM1_L2D8Szddwx3Vwr
+   한 달 이용권 결제창의 이동 페이지:
+     https://iwba2023-eng.github.io/pickme/?unlock=PM30_w2MZyZhazByLC6
+   이동 버튼 문구: "pick me로 돌아가기"
+
+   * 토큰 교체 시: 아래 UNLOCK_TOKENS 와 그로블 이동 페이지를
+     같은 값으로 함께 바꿔야 해요 (월 1회 교체 권장)
    ============================================================ */
 const CONFIG = {
-  // 토스페이먼츠 클라이언트 키 (대시보드 → 개발 → API 키)
-  TOSS_CLIENT_KEY: "test_ck_YOUR_CLIENT_KEY_HERE",
+  PAY_LINKS: {
+    once:  "https://www.groble.im/payment/VnDLkw",   // 1회 이용권
+    month: "https://www.groble.im/payment/C2DEYZ",   // 한 달 이용권
+  },
+  UNLOCK_TOKENS: {
+    once:  "PM1_L2D8Szddwx3Vwr",
+    month: "PM30_w2MZyZhazByLC6",
+  },
+  // (선택) Supabase Edge Function URL — 발급 로그를 남기고 싶을 때만
+  EDGE_URL: "",
 
-  // Supabase Edge Function URL
-  // 형식: https://<project-ref>.supabase.co/functions/v1/pickme
-  EDGE_URL: "https://YOUR_PROJECT.supabase.co/functions/v1/pickme",
-
-  // 결제 성공/실패 리다이렉트 URL (현재 페이지 URL 그대로 써도 됨)
-  SUCCESS_URL: location.origin + location.pathname + "?payment=success",
-  FAIL_URL:    location.origin + location.pathname + "?payment=fail",
-
-  PRICES: { once: 1900, month: 9900, year: 79000 },
-  LABELS: { once: "1회 이용권", month: "한 달 이용권", year: "연 이용권" },
+  PRICES: { once: 1900, month: 9900 },
+  LABELS: { once: "1회 이용권", month: "한 달 이용권" },
 };
 </script>
 <style>
@@ -450,7 +459,7 @@ o.o_pick 참여할게요 @bestie"></textarea>
       <button class="btn" id="licenseBtn" style="padding:10px 18px;font-size:12.5px">확인</button>
     </div>
     <button class="close-x" id="paywallClose">다음에 할게요</button>
-    <p class="demo-note">* 지금은 데모 결제입니다. 실제 서비스에서는 결제 링크로 결제하신 분께 이용코드를 보내 드리고, 위 칸에 입력하면 열리는 방식으로 시작할 수 있어요.</p>
+    <p class="demo-note">* 결제 버튼을 누르면 그로블 결제창으로 이동해요. 카드 · 카카오페이 · 네이버페이로 결제할 수 있고, 결제가 끝나면 자동으로 이 화면으로 돌아와 이용권이 열려요.</p>
   </div>
 </div>
 
@@ -529,161 +538,173 @@ function renderThemeBar(){
 const $ = id => document.getElementById(id);
 
 /* ============================================================
-   UID — 브라우저 fingerprint (로그인 없이 사용자 식별)
-   실서비스에서는 로그인 연동 권장. 여기서는 localStorage 기반.
+   STORAGE — localStorage 안전 래퍼
+   (미리보기 등 localStorage가 막힌 환경에서는 메모리로 대체)
+   ============================================================ */
+const store = (()=>{
+  try{
+    localStorage.setItem('__t','1'); localStorage.removeItem('__t');
+    return localStorage;
+  }catch(e){
+    const m={};
+    return {
+      getItem:k=>(k in m ? m[k] : null),
+      setItem:(k,v)=>{ m[k]=String(v); },
+      removeItem:k=>{ delete m[k]; }
+    };
+  }
+})();
+
+/* ============================================================
+   UID — 브라우저 식별자 (발급 로그용)
    ============================================================ */
 function getUID(){
-  let uid = localStorage.getItem('pickme_uid');
+  let uid = store.getItem('pickme_uid');
   if(!uid){
     uid = 'u_' + Date.now().toString(36) + Math.random().toString(36).slice(2,8);
-    localStorage.setItem('pickme_uid', uid);
+    store.setItem('pickme_uid', uid);
   }
   return uid;
 }
 const UID = getUID();
 
 /* ============================================================
-   LICENSE STATE — Supabase 조회 결과를 메모리에 캐시
+   LICENSE — 그로블 결제 → 이동 페이지의 unlock 토큰으로 발급
+   브라우저(localStorage)에 보관, 만료/횟수 자동 관리
    ============================================================ */
 const FREE_DRAWS = 2;
-let usedDraws = parseInt(localStorage.getItem('pickme_used')||'0', 10);
-let licenseState = null;   // null | { plan, expiresAt, drawsLeft, watermark }
+let usedDraws = parseInt(store.getItem('pickme_used')||'0', 10);
+let licenseState = null;   // { plan, activatedAt, expiresAt, drawsLeft }
 let unlocked = false;
 
-async function checkLicense(){
+function loadLicense(){
   try{
-    const res = await fetch(`${CONFIG.EDGE_URL}/status?uid=${UID}`);
-    const data = await res.json();
-    if(data.licensed){
-      licenseState = data;
-      unlocked = true;
+    const raw = store.getItem('pickme_license');
+    if(!raw) return;
+    const lic = JSON.parse(raw);
+    if(new Date(lic.expiresAt) < new Date()){          // 기간 만료
+      store.removeItem('pickme_license'); return;
     }
-  }catch(e){
-    // 네트워크 오류 시 로컬 상태 유지
-    console.warn('license check failed', e);
+    if(lic.plan==='once' && lic.drawsLeft<=0){         // 1회권 소진
+      store.removeItem('pickme_license'); return;
+    }
+    licenseState = lic; unlocked = true;
+  }catch(e){}
+}
+
+function saveLicense(){
+  if(licenseState) store.setItem('pickme_license', JSON.stringify(licenseState));
+}
+
+function issueLicense(plan){
+  const exp = new Date();
+  if(plan==='once') exp.setHours(exp.getHours()+24);      // 1회권: 24시간 내 사용
+  else if(plan==='month') exp.setDate(exp.getDate()+30);  // 한 달
+  else exp.setFullYear(exp.getFullYear()+1);
+  licenseState = {
+    plan,
+    activatedAt: new Date().toISOString(),
+    expiresAt:   exp.toISOString(),
+    drawsLeft:   plan==='once' ? 1 : 99999
+  };
+  unlocked = true;
+  saveLicense();
+  // (선택) 발급 로그 — EDGE_URL 설정 시에만 기록
+  if(CONFIG.EDGE_URL){
+    fetch(`${CONFIG.EDGE_URL}/redeem`, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ uid: UID, plan, at: new Date().toISOString() })
+    }).catch(()=>{});
   }
-  updateTrialChip(); renderThemeBar(); syncPro();
 }
 
 function trialLeft(){ return Math.max(0, FREE_DRAWS - usedDraws); }
 function updateTrialChip(){
   const c = $('trialChip');
   if(unlocked){
-    const label = licenseState?.plan === 'once' ? '1회 이용권' :
-                  licenseState?.plan === 'month' ? '한 달 이용권' : '연 이용권';
-    c.innerHTML = `${label} 사용 중 <b>✦</b>`;
+    if(licenseState?.plan === 'once'){
+      c.innerHTML = `1회 이용권 · 추첨 <b>${licenseState.drawsLeft}</b>회 남음`;
+    }else{
+      const label = licenseState?.plan === 'month' ? '한 달 이용권' : '이용권';
+      const dday = licenseState ? Math.max(0, Math.ceil((new Date(licenseState.expiresAt)-new Date())/86400000)) : '';
+      c.innerHTML = `${label} 사용 중 <b>D-${dday}</b>`;
+    }
     return;
   }
   c.innerHTML = trialLeft()>0
     ? `무료 체험 <b>${trialLeft()}</b>회 남았어요`
     : `무료 체험이 끝났어요 · <b>이용권</b>이 필요해요`;
 }
-function canDraw(){ return unlocked || trialLeft()>0; }
-function showWatermark(){
-  if(!unlocked) return true;
-  if(licenseState?.watermark === false) return $('wmToggle').checked;
-  return $('wmToggle').checked;
+function canDraw(){
+  if(unlocked){
+    if(licenseState?.plan==='once') return licenseState.drawsLeft>0;
+    return true;
+  }
+  return trialLeft()>0;
 }
+function showWatermark(){ return !unlocked || $('wmToggle').checked; }
 function syncPro(){ $('wmRow').style.display = unlocked ? 'flex' : 'none'; }
 
 /* ============================================================
-   TOSS PAYMENTS — 결제창 호출
+   GROBLE 결제 — 결제창 링크로 이동 → 이동 페이지의 unlock 토큰으로 복귀
    ============================================================ */
-async function requestPayment(plan){
-  const tossPayments = TossPayments(CONFIG.TOSS_CLIENT_KEY);
-  const payment = tossPayments.payment({ customerKey: UID });
-
-  const orderId = `pickme_${plan}_${UID}_${Date.now()}`;
-  const amount  = CONFIG.PRICES[plan];
-  const label   = CONFIG.LABELS[plan];
-
-  // 결제 요청 → 성공 시 SUCCESS_URL?paymentKey=...&orderId=...&amount=... 로 리다이렉트
-  await payment.requestPayment({
-    method: "CARD",                   // 카드 기본 + 간편결제 자동 노출
-    amount: { currency: "KRW", value: amount },
-    orderId,
-    orderName: `pick me · ${label}`,
-    successUrl: CONFIG.SUCCESS_URL,
-    failUrl:    CONFIG.FAIL_URL,
-    customerEmail: "",                // 선택
-    card: { useEscrow: false, flowMode: "DEFAULT", useCardPoint: false, useAppCardOnly: false },
-  });
+function goToPayment(plan){
+  const link = CONFIG.PAY_LINKS[plan];
+  if(!link || link.includes('YOUR-')){
+    alert('결제 링크가 아직 연결되지 않았어요. (CONFIG.PAY_LINKS 설정 필요)');
+    return;
+  }
+  // 같은 탭 이동 — 결제 완료 후 그로블 "이동 페이지" 버튼으로 자연스럽게 복귀
+  location.href = link;
 }
 
-/* ============================================================
-   결제 성공 리다이렉트 처리 — 페이지 로드 시 URL 파라미터 확인
-   ============================================================ */
-async function handlePaymentRedirect(){
+/* 그로블 결제 완료 복귀 처리 — ?unlock=토큰 확인 */
+function handleGrobleReturn(){
   const params = new URLSearchParams(location.search);
-  if(params.get('payment') !== 'success') return;
-
-  const paymentKey = params.get('paymentKey');
-  const orderId    = params.get('orderId');
-  const amount     = params.get('amount');
-  if(!paymentKey || !orderId || !amount) return;
-
-  // URL 파라미터 정리 (뒤로가기 시 재처리 방지)
-  history.replaceState({}, '', location.pathname);
-
-  // Edge Function 에 승인 요청
-  try{
-    const res = await fetch(`${CONFIG.EDGE_URL}/confirm`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ paymentKey, orderId, amount: parseInt(amount) })
-    });
-    const data = await res.json();
-    if(data.ok){
-      licenseState = data;
-      unlocked = true;
-      updateTrialChip(); renderThemeBar(); syncPro();
-      showPaymentSuccess();
-    }else{
-      alert('결제 승인 중 오류가 발생했어요: ' + (data.message || ''));
-    }
-  }catch(e){
-    alert('네트워크 오류로 결제 확인에 실패했어요. 고객센터로 문의해 주세요.');
+  const token = params.get('unlock');
+  if(!token) return false;
+  history.replaceState({}, '', location.pathname);   // URL 정리 (재처리·공유 방지)
+  const plan = Object.keys(CONFIG.UNLOCK_TOKENS)
+    .find(p => CONFIG.UNLOCK_TOKENS[p] === token);
+  if(plan){
+    issueLicense(plan);
+    return true;
   }
+  return false;
 }
 
 function showPaymentSuccess(){
   const modal = document.createElement('div');
   modal.style.cssText='position:fixed;inset:0;z-index:70;display:flex;align-items:center;justify-content:center;background:rgba(87,81,75,.4);padding:20px';
+  const planLabel = CONFIG.LABELS[licenseState?.plan] || '이용권';
   modal.innerHTML=`
     <div style="background:#FFFEFC;border:1.5px solid #DCD2C8;border-radius:22px;max-width:340px;width:100%;padding:36px 28px;text-align:center;font-family:'Noto Sans KR',sans-serif">
       <div style="font-size:32px;margin-bottom:12px">✦</div>
-      <div style="font-size:18px;font-weight:700;color:#57514B;margin-bottom:8px">이용권이 열렸어요</div>
-      <p style="font-size:13px;font-weight:300;color:#8C847C;margin-bottom:22px;line-height:1.6">모든 테마와 워터마크 제거 기능을 사용할 수 있어요.</p>
+      <div style="font-size:18px;font-weight:700;color:#57514B;margin-bottom:8px">${planLabel}이 열렸어요</div>
+      <p style="font-size:13px;font-weight:300;color:#8C847C;margin-bottom:22px;line-height:1.6">결제해 주셔서 감사해요.<br>모든 테마와 워터마크 제거를 사용할 수 있어요.</p>
       <button onclick="this.closest('div[style]').remove()" style="font-family:'Noto Sans KR',sans-serif;font-weight:500;font-size:14px;border:1.5px solid #D9A0AB;border-radius:999px;padding:10px 28px;background:#F4E1E3;cursor:pointer;color:#57514B">시작하기</button>
     </div>`;
   document.body.appendChild(modal);
 }
 
 /* ============================================================
-   PAYWALL — 플랜 버튼 → 토스 결제창
+   PAYWALL — 플랜 버튼 → 그로블 결제창으로 이동
    ============================================================ */
 $('paywallClose').onclick = ()=>$('paywall').classList.remove('show');
 
 document.querySelectorAll('.plan').forEach(p=>{
-  p.onclick = async ()=>{
+  p.onclick = ()=>{
     $('paywall').classList.remove('show');
-    const plan = p.dataset.plan;
-    try{
-      await requestPayment(plan);
-    }catch(e){
-      // 사용자가 결제창을 닫은 경우 등 — 조용히 무시
-      if(e?.code !== 'USER_CANCEL') console.error('payment error', e);
-    }
+    goToPayment(p.dataset.plan);
   };
 });
 
-/* 이용코드 입력 (카카오페이 수동 발급 병행용) */
-$('licenseBtn').onclick = async ()=>{
+/* 이용코드 입력 (DM 수동 발급 병행용 — 결제 오류 시 백업 경로) */
+$('licenseBtn').onclick = ()=>{
   const code = $('licenseCode').value.trim().toUpperCase();
   if(code.startsWith('PICKME-') && code.length >= 10){
-    // 코드 방식은 Edge Function 없이 직접 잠금 해제 (1단계 수동 운영용)
-    unlocked = true;
-    localStorage.setItem('pickme_code', code);
+    issueLicense('month');            // 수동 코드는 한 달권으로 발급
+    store.setItem('pickme_code', code);
     $('paywall').classList.remove('show');
     updateTrialChip(); renderThemeBar(); syncPro();
     hideErr();
@@ -903,18 +924,18 @@ $('drawBtn').onclick = ()=>{
     groups
   };
 
-  usedDraws++;
-  localStorage.setItem('pickme_used', usedDraws);
-  updateTrialChip();
-
-  // 이용권 있는 경우 서버에 소비 기록 (1회권 차감)
   if(unlocked){
-    fetch(`${CONFIG.EDGE_URL}/consume`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ uid: UID })
-    }).catch(()=>{/* 네트워크 오류 시 무시 — 낙관적 업데이트 */});
+    // 이용권 사용: 1회권은 횟수 차감, 기간권은 그대로
+    if(licenseState?.plan === 'once'){
+      licenseState.drawsLeft = Math.max(0, licenseState.drawsLeft - 1);
+      saveLicense();
+    }
+  }else{
+    // 무료 체험 차감
+    usedDraws++;
+    store.setItem('pickme_used', usedDraws);
   }
+  updateTrialChip();
   runOverlay();
 };
 
@@ -1361,40 +1382,21 @@ $('redrawBtn').onclick=()=>{
   $('drawBtn').click();
 };
 
-/* 이용코드 입력 (결제 링크 판매용 · 데모 검증) */
-$('licenseBtn').onclick=()=>{
-  const code=$('licenseCode').value.trim().toUpperCase();
-  if(code.startsWith('PICKME-') && code.length>=10){
-    unlocked=true;
-    $('paywall').classList.remove('show');
-    updateTrialChip(); renderThemeBar(); syncPro();
-    hideErr();
-  }else{
-    $('licenseCode').value='';
-    $('licenseCode').placeholder='코드를 다시 확인해 주세요';
-  }
-};
+$('wmToggle').addEventListener('change', ()=>{ if(lastDraw) drawCard(); });
 
-$('wmToggle').addEventListener('change', async ()=>{
-  if(lastDraw) drawCard();
-  if(unlocked){
-    fetch(`${CONFIG.EDGE_URL}/watermark`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ uid: UID, show: $('wmToggle').checked })
-    }).catch(()=>{});
-  }
-});
-
-// 시작 순서: 결제 리다이렉트 처리 → 이용권 조회 → UI 초기화
-(async ()=>{
-  await handlePaymentRedirect();
-  await checkLicense();
-  // 저장된 이용코드 복원 (카카오페이 수동 방식 병행)
-  if(!unlocked && localStorage.getItem('pickme_code')){
-    unlocked = true;
-    updateTrialChip(); renderThemeBar(); syncPro();
-  }
+/* ============================================================
+   시작 순서
+   1) 저장된 이용권 복원 (만료·소진 자동 정리)
+   2) 그로블 결제 복귀 확인 (?unlock=토큰)
+   3) UI 초기화
+   ============================================================ */
+(function init(){
+  loadLicense();
+  const justPaid = handleGrobleReturn();
+  renderThemeBar();
+  syncPro();
+  updateTrialChip();
+  if(justPaid) showPaymentSuccess();
 })();
 </script>
 </body>
